@@ -9,8 +9,10 @@ import (
 )
 
 type ConfigOpts struct {
-	appId     string
-	appSecret string
+	appId       string
+	appSecret   string
+	authType    string
+	redirectURI string
 }
 
 var configOpts = ConfigOpts{}
@@ -22,29 +24,57 @@ func handleConfigCommand() error {
 	}
 
 	fmt.Println("Configuration file on: " + configPath)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		config := core.NewConfig(configOpts.appId, configOpts.appSecret)
-		if err = config.WriteConfig2File(configPath); err != nil {
-			return err
-		}
-		fmt.Println(utils.PrettyPrint(config))
-	} else {
-		config, err := core.ReadConfigFromFile(configPath)
-		if err != nil {
-			return err
-		}
-		if configOpts.appId != "" {
-			config.Feishu.AppId = configOpts.appId
-		}
-		if configOpts.appSecret != "" {
-			config.Feishu.AppSecret = configOpts.appSecret
-		}
-		if configOpts.appId != "" || configOpts.appSecret != "" {
-			if err = config.WriteConfig2File(configPath); err != nil {
-				return err
-			}
-		}
-		fmt.Println(utils.PrettyPrint(config))
+	config, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		return err
 	}
+	updateConfig(config)
+	if err = config.Feishu.Validate(); err != nil {
+		return err
+	}
+	if err = config.WriteConfig2File(configPath); err != nil {
+		return err
+	}
+	fmt.Println(utils.PrettyPrint(redactedConfig(config)))
 	return nil
+}
+
+func loadOrCreateConfig(configPath string) (*core.Config, error) {
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return core.NewConfig(configOpts.appId, configOpts.appSecret), nil
+	}
+	return core.ReadConfigFromFile(configPath)
+}
+
+func updateConfig(config *core.Config) {
+	if configOpts.appId != "" {
+		config.Feishu.AppId = configOpts.appId
+	}
+	if configOpts.appSecret != "" {
+		config.Feishu.AppSecret = configOpts.appSecret
+	}
+	if configOpts.authType != "" {
+		config.Feishu.AuthType = configOpts.authType
+	}
+	if configOpts.redirectURI != "" {
+		config.Feishu.OAuthRedirectURL = configOpts.redirectURI
+	}
+}
+
+func redactedConfig(config *core.Config) *core.Config {
+	copy := *config
+	copy.Feishu.AppSecret = maskSecret(copy.Feishu.AppSecret)
+	copy.Feishu.UserAccessToken = maskSecret(copy.Feishu.UserAccessToken)
+	copy.Feishu.UserRefreshToken = maskSecret(copy.Feishu.UserRefreshToken)
+	return &copy
+}
+
+func maskSecret(value string) string {
+	if len(value) <= 8 {
+		if value == "" {
+			return ""
+		}
+		return "********"
+	}
+	return value[:4] + "..." + value[len(value)-4:]
 }

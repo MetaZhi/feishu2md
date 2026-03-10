@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v2"
 )
@@ -36,9 +37,36 @@ func main() {
 						Usage:       "Set app secret for the OPEN API",
 						Destination: &configOpts.appSecret,
 					},
+					&cli.StringFlag{
+						Name:        "authType",
+						Value:       "",
+						Usage:       "Set authentication type: 'app' or 'user'",
+						Destination: &configOpts.authType,
+					},
+					&cli.StringFlag{
+						Name:        "redirectURI",
+						Value:       "",
+						Usage:       "Set oauth redirect uri for built-in user login",
+						Destination: &configOpts.redirectURI,
+					},
 				},
 				Action: func(ctx *cli.Context) error {
 					return handleConfigCommand()
+				},
+			},
+			{
+				Name:  "login",
+				Usage: "Login with your Feishu account and persist refreshable user tokens",
+				Flags: []cli.Flag{
+					&cli.DurationFlag{
+						Name:        "timeout",
+						Value:       5 * time.Minute,
+						Usage:       "Wait timeout for oauth callback",
+						Destination: &loginOpts.timeout,
+					},
+				},
+				Action: func(ctx *cli.Context) error {
+					return handleLoginCommand()
 				},
 			},
 			{
@@ -76,10 +104,8 @@ func main() {
 				Action: func(ctx *cli.Context) error {
 					if ctx.NArg() == 0 {
 						return cli.Exit("Please specify the document/folder/wiki url", 1)
-					} else {
-						url := ctx.Args().First()
-						return handleDownloadCommand(url)
 					}
+					return handleDownloadCommand(ctx.Args().First())
 				},
 			},
 		},

@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/88250/lute"
@@ -18,6 +17,10 @@ import (
 )
 
 func downloadHandler(c *gin.Context) {
+	if requireWebLogin(c) {
+		return
+	}
+
 	// get parameters
 	feishu_docx_url, err := url.QueryUnescape(c.Query("url"))
 	if err != nil {
@@ -31,16 +34,15 @@ func downloadHandler(c *gin.Context) {
 
 	// Create client with context
 	ctx := context.Background()
-	config := core.NewConfig(
-		os.Getenv("FEISHU_APP_ID"),
-		os.Getenv("FEISHU_APP_SECRET"),
-	)
-	client := core.NewClient(
-		config.Feishu.AppId, config.Feishu.AppSecret,
-	)
+	client, err := newWebClient(c)
+	if err != nil {
+		c.String(http.StatusUnauthorized, err.Error())
+		return
+	}
+	outputConfig := core.NewConfig("", "").Output
 
 	// Process the download
-	parser := core.NewParser(config.Output)
+	parser := core.NewParser(outputConfig)
 	markdown := ""
 
 	// for a wiki page, we need to renew docType and docToken first
@@ -70,7 +72,7 @@ func downloadHandler(c *gin.Context) {
 	zipBuffer := new(bytes.Buffer)
 	writer := zip.NewWriter(zipBuffer)
 	for _, imgToken := range parser.ImgTokens {
-		localLink, rawImage, err := client.DownloadImageRaw(ctx, imgToken, config.Output.ImageDir)
+		localLink, rawImage, err := client.DownloadImageRaw(ctx, imgToken, outputConfig.ImageDir)
 		if err != nil {
 			c.String(http.StatusInternalServerError, "Internal error: client.DownloadImageRaw")
 			log.Panicf("error: %s", err)

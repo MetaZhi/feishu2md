@@ -256,10 +256,10 @@ func handleDownloadCommand(url string) error {
 	}
 	dlConfig = *config
 
-	// Instantiate the client
-	client := core.NewClient(
-		dlConfig.Feishu.AppId, dlConfig.Feishu.AppSecret,
-	)
+	client, err := newCLIClient(configPath, &dlConfig)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 
 	if dlOpts.batch {
@@ -271,4 +271,21 @@ func handleDownloadCommand(url string) error {
 	}
 
 	return downloadDocument(ctx, client, url, &dlOpts)
+}
+
+func newCLIClient(configPath string, config *core.Config) (*core.Client, error) {
+	if config.Feishu.AuthType != core.AuthTypeUser {
+		return core.NewClient(config.Feishu, nil), nil
+	}
+	provider, err := core.NewRefreshingUserTokenProvider(
+		config.Feishu,
+		func(state core.UserAuthState) error {
+			config.Feishu.SetUserAuthState(state)
+			return config.WriteConfig2File(configPath)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return core.NewClient(config.Feishu, provider), nil
 }

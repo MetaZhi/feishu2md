@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -25,7 +25,6 @@
       body {
         margin: 0;
         font-family: "Gloria Hallelujah", cursive;
-        /* font-size: 16px; */
         line-height: 1.8;
       }
       main {
@@ -33,7 +32,7 @@
         text-align: center;
       }
       wired-card {
-        max-width: 400px;
+        max-width: 480px;
         margin: 0 auto;
         padding: 20px;
         display: block;
@@ -42,19 +41,22 @@
         margin: 0 10px;
       }
       section {
-        max-width: 400px;
+        max-width: 480px;
         margin: 0 auto;
-        padding: 30px 0 0 0;
+        padding: 24px 0 0 0;
       }
       wired-button {
         margin: 8px;
       }
       wired-input {
-        width: 260px;
+        width: 320px;
         font-family: inherit;
       }
-      wired-spinner {
-        margin: 10px;
+      .status {
+        padding: 10px 14px;
+        border: 2px dashed #111;
+        margin: 12px auto 0;
+        max-width: 360px;
       }
     </style>
   </head>
@@ -63,7 +65,20 @@
     <main>
       <wired-card elevation="5">
         <h1>feishu2md service</h1>
+        <p>当前鉴权模式：{{ .AuthType }}</p>
+        {{ if eq .AuthType "user" }}
+        <div class="status">
+          {{ if .Authenticated }}
+          <div>已登录：{{ .UserName }}</div>
+          <wired-button id="logout-button" elevation="2">Logout</wired-button>
+          {{ else }}
+          <div>未登录，下载前会跳转飞书授权</div>
+          <wired-button id="login-button" elevation="2">Login With Feishu</wired-button>
+          {{ end }}
+        </div>
+        {{ end }}
       </wired-card>
+
       <section>
         <p>
           <wired-icon-button>
@@ -80,7 +95,7 @@
         <wired-input
           placeholder="https://domain.feishu.cn/docx/doxcnXhmd9GIPTyqoLn3zVP7AFe"
         ></wired-input>
-        <wired-button elevation="2">Download</wired-button>
+        <wired-button id="download-button" elevation="2">Download</wired-button>
         <p id="hint" style="display: none;">
           Please wait. It may take a while to response.
         </p>
@@ -90,13 +105,27 @@
 
   <script type="module">
     const url = document.querySelector("wired-input");
-    const button = document.querySelector("wired-button");
+    const button = document.querySelector("#download-button");
     const hint = document.querySelector("#hint");
+    const loginButton = document.querySelector("#login-button");
+    const logoutButton = document.querySelector("#logout-button");
+
     button.addEventListener("click", () => {
       const docUrl = encodeURIComponent(url.value.trim());
-      console.log(docUrl);
       hint.setAttribute("style", "display: block");
       window.location.href = `/download?url=${docUrl}`;
     });
+
+    if (loginButton) {
+      loginButton.addEventListener("click", () => {
+        window.location.href = "/auth/login";
+      });
+    }
+
+    if (logoutButton) {
+      logoutButton.addEventListener("click", () => {
+        window.location.href = "/auth/logout";
+      });
+    }
   </script>
 </html>

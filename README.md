@@ -29,6 +29,45 @@
   - [获取知识空间节点信息](https://open.feishu.cn/document/server-docs/docs/wiki-v2/space-node/get_node)，「查看知识库」权限 `wiki:wiki:readonly`
 - 打开凭证与基础信息，获取 App ID 和 App Secret
 
+## 用户登录授权
+
+从当前版本开始，`feishu2md` 支持内建的飞书用户登录授权，不再需要手动在外部获取 `user_access_token`。
+
+### CLI 用法
+
+1. 先配置应用凭证，并切换到用户鉴权模式：
+
+   ```bash
+   feishu2md config \
+     --appId "<your_app_id>" \
+     --appSecret "<your_app_secret>" \
+     --authType "user" \
+     --redirectURI "http://127.0.0.1:38080/auth/callback"
+   ```
+
+2. 在飞书开放平台里，将上面的 `redirectURI` 配置到应用的重定向地址。
+
+3. 执行登录：
+
+   ```bash
+   feishu2md login
+   ```
+
+4. 按终端输出的链接完成飞书登录。登录成功后，工具会自动保存 `access_token` / `refresh_token`，后续下载时自动刷新，不需要每 2 小时手动更新。
+
+### Web 用法
+
+Web 服务默认仍兼容应用鉴权。若要启用用户登录授权，请设置：
+
+```bash
+FEISHU_AUTH_TYPE=user
+FEISHU_APP_ID=<your_app_id>
+FEISHU_APP_SECRET=<your_app_secret>
+FEISHU_OAUTH_REDIRECT_URI=http://127.0.0.1:8080/auth/callback
+```
+
+然后在飞书开放平台为该应用配置同样的重定向地址。访问 Web 页面后，点击 `Login With Feishu`，登录后的下载会基于当前用户的文档/知识库权限执行。
+
 ## 如何使用
 
 注意：飞书旧版文档的下载工具已决定不再维护，但分支 [v1_support](https://github.com/Wsine/feishu2md/tree/v1_support) 仍可使用，对应的归档为 [v1.4.0](https://github.com/Wsine/feishu2md/releases/tag/v1.4.0)，请知悉。
@@ -53,6 +92,7 @@
 
    COMMANDS:
      config        Read config file or set field(s) if provided
+     login         Login with your Feishu account and persist refreshable user tokens
      download, dl  Download feishu/larksuite document to markdown file
      help, h       Shows a list of commands or help for one command
 
@@ -68,9 +108,22 @@
       feishu2md config [command options] [arguments...]
 
    OPTIONS:
-      --appId value      Set app id for the OPEN API
-      --appSecret value  Set app secret for the OPEN API
-      --help, -h         show help (default: false)
+      --appId value        Set app id for the OPEN API
+      --appSecret value    Set app secret for the OPEN API
+      --authType value     Set authentication type: 'app' or 'user'
+      --redirectURI value  Set oauth redirect uri for built-in user login
+      --help, -h           show help (default: false)
+
+   $ feishu2md login -h
+   NAME:
+      feishu2md login - Login with your Feishu account and persist refreshable user tokens
+
+   USAGE:
+      feishu2md login [command options] [arguments...]
+
+   OPTIONS:
+      --timeout value  Wait timeout for oauth callback (default: 5m0s)
+      --help, -h       show help (default: false)
 
    $ feishu2md dl -h
    NAME:
@@ -91,6 +144,8 @@
    **生成配置文件**
 
    通过 `feishu2md config --appId <your_id> --appSecret <your_secret>` 命令即可生成该工具的配置文件。
+
+   若希望按登录用户的权限下载私有文档/知识库，请额外执行 `feishu2md login` 完成一次飞书授权。
 
    通过 `feishu2md config` 命令可以查看配置文件路径以及是否成功配置。
 
@@ -135,7 +190,7 @@
 
   Docker 镜像：https://hub.docker.com/r/wwwsine/feishu2md
 
-   Docker 命令：`docker run -it --rm -p 8080:8080 -e FEISHU_APP_ID=<your id> -e FEISHU_APP_SECRET=<your secret> -e GIN_MODE=release wwwsine/feishu2md`
+   Docker 命令：`docker run -it --rm -p 8080:8080 -e FEISHU_APP_ID=<your id> -e FEISHU_APP_SECRET=<your secret> -e FEISHU_AUTH_TYPE=user -e FEISHU_OAUTH_REDIRECT_URI=http://127.0.0.1:8080/auth/callback -e GIN_MODE=release wwwsine/feishu2md`
 
    Docker Compose:
 
@@ -148,6 +203,8 @@
        environment:
          FEISHU_APP_ID: <your id>
          FEISHU_APP_SECRET: <your secret>
+         FEISHU_AUTH_TYPE: user
+         FEISHU_OAUTH_REDIRECT_URI: http://127.0.0.1:8080/auth/callback
          GIN_MODE: release
        ports:
          - "8080:8080"

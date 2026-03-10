@@ -10,6 +10,10 @@ import (
 )
 
 func getIdAndSecretFromEnv(t *testing.T) (string, string) {
+	if os.Getenv("FEISHU_RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("skip integration test unless FEISHU_RUN_INTEGRATION_TESTS=1")
+	}
+
 	appID := ""
 	appSecret := ""
 
@@ -34,7 +38,7 @@ func getIdAndSecretFromEnv(t *testing.T) (string, string) {
 
 func TestNewClient(t *testing.T) {
 	appID, appSecret := getIdAndSecretFromEnv(t)
-	c := core.NewClient(appID, appSecret)
+	c := core.NewClient(core.FeishuConfig{AppId: appID, AppSecret: appSecret}, nil)
 	if c == nil {
 		t.Errorf("Error creating DocClient")
 	}
@@ -42,7 +46,7 @@ func TestNewClient(t *testing.T) {
 
 func TestDownloadImage(t *testing.T) {
 	appID, appSecret := getIdAndSecretFromEnv(t)
-	c := core.NewClient(appID, appSecret)
+	c := core.NewClient(core.FeishuConfig{AppId: appID, AppSecret: appSecret}, nil)
 	imgToken := "boxcnA1QKPanfMhLxzF1eMhoArM"
 	filename, err := c.DownloadImage(
 		context.Background(),
@@ -51,6 +55,7 @@ func TestDownloadImage(t *testing.T) {
 	)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 	if filename != "static/"+imgToken+".png" {
 		fmt.Println(filename)
@@ -63,13 +68,14 @@ func TestDownloadImage(t *testing.T) {
 
 func TestGetDocxContent(t *testing.T) {
 	appID, appSecret := getIdAndSecretFromEnv(t)
-	c := core.NewClient(appID, appSecret)
+	c := core.NewClient(core.FeishuConfig{AppId: appID, AppSecret: appSecret}, nil)
 	docx, blocks, err := c.GetDocxContent(
 		context.Background(),
 		"doxcnXhd93zqoLnmVPGIPTy7AFe",
 	)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 	fmt.Println(docx.Title)
 	if docx.Title == "" {
@@ -83,11 +89,12 @@ func TestGetDocxContent(t *testing.T) {
 
 func TestGetWikiNodeInfo(t *testing.T) {
 	appID, appSecret := getIdAndSecretFromEnv(t)
-	c := core.NewClient(appID, appSecret)
+	c := core.NewClient(core.FeishuConfig{AppId: appID, AppSecret: appSecret}, nil)
 	const token = "wikcnLgRX9AMtvaB5x1cl57Yuah"
 	node, err := c.GetWikiNodeInfo(context.Background(), token)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 	if node.ObjType != "docx" {
 		t.Errorf("Error: node type incorrect")
@@ -96,12 +103,13 @@ func TestGetWikiNodeInfo(t *testing.T) {
 
 func TestGetDriveFolderFileList(t *testing.T) {
 	appID, appSecret := getIdAndSecretFromEnv(t)
-	c := core.NewClient(appID, appSecret)
+	c := core.NewClient(core.FeishuConfig{AppId: appID, AppSecret: appSecret}, nil)
 	folderToken := "G15mfSfIHlyquudfhq5cg9kdnjg"
 	files, err := c.GetDriveFolderFileList(
 		context.Background(), nil, &folderToken)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 	if len(files) == 0 {
 		t.Errorf("Error: no files found")
@@ -110,11 +118,12 @@ func TestGetDriveFolderFileList(t *testing.T) {
 
 func TestGetWikiNodeList(t *testing.T) {
 	appID, appSecret := getIdAndSecretFromEnv(t)
-	c := core.NewClient(appID, appSecret)
+	c := core.NewClient(core.FeishuConfig{AppId: appID, AppSecret: appSecret}, nil)
 	wikiToken := "7376995595006787612"
 	nodes, err := c.GetWikiNodeList(context.Background(), wikiToken, nil)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 	if len(nodes) == 0 {
 		t.Errorf("Error: no nodes found")
