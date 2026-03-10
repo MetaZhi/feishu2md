@@ -11,7 +11,6 @@ import (
 	"github.com/88250/lute"
 	"github.com/Wsine/feishu2md/core"
 	"github.com/Wsine/feishu2md/utils"
-	"github.com/chyroc/lark"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,8 +32,8 @@ func TestParseDocxContent(t *testing.T) {
 			defer jsonFile.Close()
 
 			data := struct {
-				Document *lark.DocxDocument `json:"document"`
-				Blocks   []*lark.DocxBlock  `json:"blocks"`
+				Document *core.Document `json:"document"`
+				Blocks   []*core.Block  `json:"blocks"`
 			}{}
 			byteValue, _ := io.ReadAll(jsonFile)
 			json.Unmarshal(byteValue, &data)

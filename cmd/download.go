@@ -8,10 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/88250/lute"
 	"github.com/Wsine/feishu2md/core"
 	"github.com/Wsine/feishu2md/utils"
-	"github.com/chyroc/lark"
 	"github.com/pkg/errors"
 )
 
@@ -59,22 +57,18 @@ func downloadDocument(ctx context.Context, client *core.Client, url string, opts
 	markdown := parser.ParseDocxContent(docx, blocks)
 
 	if !dlConfig.Output.SkipImgDownload {
-		for _, imgToken := range parser.ImgTokens {
-			localLink, err := client.DownloadImage(
-				ctx, imgToken, filepath.Join(opts.outputDir, dlConfig.Output.ImageDir),
+		for _, asset := range parser.Assets {
+			localLink, err := client.DownloadAsset(
+				ctx, asset, filepath.Join(opts.outputDir, dlConfig.Output.ImageDir),
 			)
 			if err != nil {
 				return err
 			}
-			markdown = strings.Replace(markdown, imgToken, localLink, 1)
+			markdown = strings.Replace(markdown, asset.Token, localLink, 1)
 		}
 	}
 
-	// Format the markdown document
-	engine := lute.New(func(l *lute.Lute) {
-		l.RenderOptions.AutoSpace = true
-	})
-	result := engine.FormatStr("md", markdown)
+	result := markdown
 
 	// Handle the output directory and name
 	if _, err := os.Stat(opts.outputDir); os.IsNotExist(err) {
@@ -87,8 +81,8 @@ func downloadDocument(ctx context.Context, client *core.Client, url string, opts
 		jsonName := fmt.Sprintf("%s.json", docToken)
 		outputPath := filepath.Join(opts.outputDir, jsonName)
 		data := struct {
-			Document *lark.DocxDocument `json:"document"`
-			Blocks   []*lark.DocxBlock  `json:"blocks"`
+			Document *core.Document `json:"document"`
+			Blocks   []*core.Block  `json:"blocks"`
 		}{
 			Document: docx,
 			Blocks:   blocks,

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/88250/lute"
 	"github.com/Wsine/feishu2md/core"
 	"github.com/Wsine/feishu2md/utils"
 	"github.com/gin-gonic/gin"
@@ -71,14 +70,14 @@ func downloadHandler(c *gin.Context) {
 
 	zipBuffer := new(bytes.Buffer)
 	writer := zip.NewWriter(zipBuffer)
-	for _, imgToken := range parser.ImgTokens {
-		localLink, rawImage, err := client.DownloadImageRaw(ctx, imgToken, outputConfig.ImageDir)
+	for _, asset := range parser.Assets {
+		localLink, rawImage, err := client.DownloadAssetRaw(ctx, asset, outputConfig.ImageDir)
 		if err != nil {
 			c.String(http.StatusInternalServerError, "Internal error: client.DownloadImageRaw")
 			log.Panicf("error: %s", err)
 			return
 		}
-		markdown = strings.Replace(markdown, imgToken, localLink, 1)
+		markdown = strings.Replace(markdown, asset.Token, localLink, 1)
 		f, err := writer.Create(localLink)
 		if err != nil {
 			c.String(http.StatusInternalServerError, "Internal error: zipWriter.Create")
@@ -93,13 +92,10 @@ func downloadHandler(c *gin.Context) {
 		}
 	}
 
-	engine := lute.New(func(l *lute.Lute) {
-		l.RenderOptions.AutoSpace = true
-	})
-	result := engine.FormatStr("md", markdown)
+	result := markdown
 
 	// Set response
-	if len(parser.ImgTokens) > 0 {
+	if len(parser.Assets) > 0 {
 		mdName := fmt.Sprintf("%s.md", docToken)
 		f, err := writer.Create(mdName)
 		if err != nil {

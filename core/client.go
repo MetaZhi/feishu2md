@@ -9,22 +9,26 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/chyroc/lark"
-	"github.com/chyroc/lark_rate_limiter"
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	larkboard "github.com/larksuite/oapi-sdk-go/v3/service/board/v1"
+	larkdocx "github.com/larksuite/oapi-sdk-go/v3/service/docx/v1"
+	larkdrive "github.com/larksuite/oapi-sdk-go/v3/service/drive/v1"
+	larkwiki "github.com/larksuite/oapi-sdk-go/v3/service/wiki/v2"
 )
 
 type Client struct {
-	larkClient    *lark.Lark
+	larkClient    *lark.Client
 	authType      string
 	tokenProvider UserAccessTokenProvider
 }
 
 func NewClient(config FeishuConfig, tokenProvider UserAccessTokenProvider) *Client {
 	return &Client{
-		larkClient: lark.New(
-			lark.WithAppCredential(config.AppId, config.AppSecret),
-			lark.WithTimeout(60*time.Second),
-			lark.WithApiMiddleware(lark_rate_limiter.Wait(4, 4)),
+		larkClient: lark.NewClient(
+			config.AppId,
+			config.AppSecret,
+			lark.WithReqTimeout(60*time.Second),
 		),
 		authType:      config.AuthType,
 		tokenProvider: tokenProvider,
@@ -32,108 +36,110 @@ func NewClient(config FeishuConfig, tokenProvider UserAccessTokenProvider) *Clie
 }
 
 func (c *Client) DownloadImage(ctx context.Context, imgToken, outDir string) (string, error) {
-	options, err := c.methodOptions(ctx)
-	if err != nil {
-		return imgToken, err
-	}
-	resp, _, err := c.larkClient.Drive.DownloadDriveMedia(ctx, &lark.DownloadDriveMediaReq{
-		FileToken: imgToken,
-	}, options...)
-	if err != nil {
-		return imgToken, err
-	}
-	fileext := filepath.Ext(resp.Filename)
-	filename := fmt.Sprintf("%s/%s%s", outDir, imgToken, fileext)
-	if err = os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
-		return imgToken, err
-	}
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
-	if err != nil {
-		return imgToken, err
-	}
-	defer file.Close()
-	_, err = io.Copy(file, resp.File)
-	return filename, err
+	return c.DownloadAsset(ctx, AssetRef{Kind: AssetKindImage, Token: imgToken}, outDir)
 }
 
 func (c *Client) DownloadImageRaw(ctx context.Context, imgToken, imgDir string) (string, []byte, error) {
+	return c.DownloadAssetRaw(ctx, AssetRef{Kind: AssetKindImage, Token: imgToken}, imgDir)
+}
+
+func (c *Client) DownloadAsset(ctx context.Context, asset AssetRef, outDir string) (string, error) {
+	filename, data, err := c.DownloadAssetRaw(ctx, asset, outDir)
+	if err != nil {
+		return asset.Token, err
+	}
+	if err = os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		return asset.Token, err
+	}
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+	if err != nil {
+		return asset.Token, err
+	}
+	defer file.Close()
+	_, err = io.Copy(file, bytes.NewReader(data))
+	return filename, err
+}
+
+func (c *Client) DownloadAssetRaw(
+	ctx context.Context,
+	asset AssetRef,
+	outDir string,
+) (string, []byte, error) {
 	options, err := c.methodOptions(ctx)
 	if err != nil {
-		return imgToken, nil, err
+		return asset.Token, nil, err
 	}
-	resp, _, err := c.larkClient.Drive.DownloadDriveMedia(ctx, &lark.DownloadDriveMediaReq{
-		FileToken: imgToken,
-	}, options...)
+	reader, originalName, err := c.downloadAssetReader(ctx, asset, options)
 	if err != nil {
-		return imgToken, nil, err
+		return asset.Token, nil, err
 	}
-	fileext := filepath.Ext(resp.Filename)
-	filename := fmt.Sprintf("%s/%s%s", imgDir, imgToken, fileext)
 	buf := new(bytes.Buffer)
-	_, err = io.Copy(buf, resp.File)
-	return filename, buf.Bytes(), err
+	if _, err = io.Copy(buf, reader); err != nil {
+		return asset.Token, nil, err
+	}
+	filename := buildAssetPath(outDir, asset, originalName)
+	return filename, buf.Bytes(), nil
 }
 
-func (c *Client) GetDocxContent(ctx context.Context, docToken string) (*lark.DocxDocument, []*lark.DocxBlock, error) {
+func (c *Client) GetDocxContent(ctx context.Context, docToken string) (*Document, []*Block, error) {
 	options, err := c.methodOptions(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	resp, _, err := c.larkClient.Drive.GetDocxDocument(ctx, &lark.GetDocxDocumentReq{
-		DocumentID: docToken,
-	}, options...)
+	resp, err := c.larkClient.Docx.V1.Document.Get(
+		ctx,
+		larkdocx.NewGetDocumentReqBuilder().DocumentId(docToken).Build(),
+		options...,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
-	docx := &lark.DocxDocument{
-		DocumentID: resp.Document.DocumentID,
-		RevisionID: resp.Document.RevisionID,
-		Title:      resp.Document.Title,
-	}
-	blocks, err := c.getDocxBlocks(ctx, docx.DocumentID, options)
-	return docx, blocks, err
+	blocks, err := c.getDocxBlocks(ctx, docToken, options)
+	return convertDocument(resp.Data.Document), blocks, err
 }
 
-func (c *Client) GetWikiNodeInfo(ctx context.Context, token string) (*lark.GetWikiNodeRespNode, error) {
+func (c *Client) GetWikiNodeInfo(ctx context.Context, token string) (*WikiNode, error) {
 	options, err := c.methodOptions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, _, err := c.larkClient.Drive.GetWikiNode(ctx, &lark.GetWikiNodeReq{
-		Token: token,
-	}, options...)
+	req := larkwiki.NewGetNodeSpaceReqBuilder().Token(token).ObjType("wiki").Build()
+	resp, err := c.larkClient.Wiki.Space.GetNode(ctx, req, options...)
 	if err != nil {
 		return nil, err
 	}
-	return resp.Node, nil
+	return convertWikiNode(resp.Data.Node), nil
 }
 
-func (c *Client) GetDriveFolderFileList(ctx context.Context, pageToken *string, folderToken *string) ([]*lark.GetDriveFileListRespFile, error) {
+func (c *Client) GetDriveFolderFileList(
+	ctx context.Context,
+	pageToken *string,
+	folderToken *string,
+) ([]*DriveFile, error) {
 	options, err := c.methodOptions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, _, err := c.larkClient.Drive.GetDriveFileList(ctx, &lark.GetDriveFileListReq{
-		PageSize:    nil,
-		PageToken:   pageToken,
-		FolderToken: folderToken,
-	}, options...)
-	if err != nil {
-		return nil, err
-	}
-	files := resp.Files
-	for resp.HasMore {
-		resp, _, err = c.larkClient.Drive.GetDriveFileList(ctx, &lark.GetDriveFileListReq{
-			PageSize:    nil,
-			PageToken:   &resp.NextPageToken,
-			FolderToken: folderToken,
-		}, options...)
+	files := make([]*DriveFile, 0)
+	nextToken := pageToken
+	for {
+		builder := larkdrive.NewListFileReqBuilder()
+		if folderToken != nil {
+			builder.FolderToken(*folderToken)
+		}
+		if nextToken != nil && *nextToken != "" {
+			builder.PageToken(*nextToken)
+		}
+		resp, err := c.larkClient.Drive.V1.File.List(ctx, builder.Build(), options...)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, resp.Files...)
+		files = append(files, convertDriveFiles(resp.Data.Files)...)
+		if !boolValueOf(resp.Data.HasMore) {
+			return files, nil
+		}
+		nextToken = resp.Data.NextPageToken
 	}
-	return files, nil
 }
 
 func (c *Client) GetWikiName(ctx context.Context, spaceID string) (string, error) {
@@ -141,48 +147,45 @@ func (c *Client) GetWikiName(ctx context.Context, spaceID string) (string, error
 	if err != nil {
 		return "", err
 	}
-	resp, _, err := c.larkClient.Drive.GetWikiSpace(ctx, &lark.GetWikiSpaceReq{
-		SpaceID: spaceID,
-	}, options...)
+	resp, err := c.larkClient.Wiki.Space.Get(
+		ctx,
+		larkwiki.NewGetSpaceReqBuilder().SpaceId(spaceID).Build(),
+		options...,
+	)
 	if err != nil {
 		return "", err
 	}
-	return resp.Space.Name, nil
+	return valueOf(resp.Data.Space.Name), nil
 }
 
-func (c *Client) GetWikiNodeList(ctx context.Context, spaceID string, parentNodeToken *string) ([]*lark.GetWikiNodeListRespItem, error) {
+func (c *Client) GetWikiNodeList(ctx context.Context, spaceID string, parentNodeToken *string) ([]*WikiNode, error) {
 	options, err := c.methodOptions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, _, err := c.larkClient.Drive.GetWikiNodeList(ctx, &lark.GetWikiNodeListReq{
-		SpaceID:         spaceID,
-		PageSize:        nil,
-		PageToken:       nil,
-		ParentNodeToken: parentNodeToken,
-	}, options...)
-	if err != nil {
-		return nil, err
-	}
-	nodes := resp.Items
-	previousPageToken := ""
-	for resp.HasMore && previousPageToken != resp.PageToken {
-		previousPageToken = resp.PageToken
-		resp, _, err = c.larkClient.Drive.GetWikiNodeList(ctx, &lark.GetWikiNodeListReq{
-			SpaceID:         spaceID,
-			PageSize:        nil,
-			PageToken:       &resp.PageToken,
-			ParentNodeToken: parentNodeToken,
-		}, options...)
+	nodes := make([]*WikiNode, 0)
+	var pageToken *string
+	for {
+		builder := larkwiki.NewListSpaceNodeReqBuilder().SpaceId(spaceID)
+		if parentNodeToken != nil {
+			builder.ParentNodeToken(*parentNodeToken)
+		}
+		if pageToken != nil && *pageToken != "" {
+			builder.PageToken(*pageToken)
+		}
+		resp, err := c.larkClient.Wiki.SpaceNode.List(ctx, builder.Build(), options...)
 		if err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, resp.Items...)
+		nodes = append(nodes, convertWikiNodes(resp.Data.Items)...)
+		if !boolValueOf(resp.Data.HasMore) {
+			return nodes, nil
+		}
+		pageToken = resp.Data.PageToken
 	}
-	return nodes, nil
 }
 
-func (c *Client) methodOptions(ctx context.Context) ([]lark.MethodOptionFunc, error) {
+func (c *Client) methodOptions(ctx context.Context) ([]larkcore.RequestOptionFunc, error) {
 	if c.authType != AuthTypeUser {
 		return nil, nil
 	}
@@ -193,28 +196,69 @@ func (c *Client) methodOptions(ctx context.Context) ([]lark.MethodOptionFunc, er
 	if err != nil {
 		return nil, err
 	}
-	return []lark.MethodOptionFunc{lark.WithUserAccessToken(token)}, nil
+	return []larkcore.RequestOptionFunc{larkcore.WithUserAccessToken(token)}, nil
 }
 
 func (c *Client) getDocxBlocks(
 	ctx context.Context,
 	documentID string,
-	options []lark.MethodOptionFunc,
-) ([]*lark.DocxBlock, error) {
-	var blocks []*lark.DocxBlock
-	var pageToken *string
+	options []larkcore.RequestOptionFunc,
+) ([]*Block, error) {
+	blocks := make([]*Block, 0)
+	var pageToken string
 	for {
-		resp, _, err := c.larkClient.Drive.GetDocxBlockListOfDocument(ctx, &lark.GetDocxBlockListOfDocumentReq{
-			DocumentID: documentID,
-			PageToken:  pageToken,
-		}, options...)
+		builder := larkdocx.NewListDocumentBlockReqBuilder().DocumentId(documentID)
+		if pageToken != "" {
+			builder.PageToken(pageToken)
+		}
+		resp, err := c.larkClient.Docx.V1.DocumentBlock.List(ctx, builder.Build(), options...)
 		if err != nil {
 			return nil, err
 		}
-		blocks = append(blocks, resp.Items...)
-		pageToken = &resp.PageToken
-		if !resp.HasMore {
+		blocks = append(blocks, convertBlocks(resp.Data.Items)...)
+		if !boolValueOf(resp.Data.HasMore) {
 			return blocks, nil
 		}
+		pageToken = valueOf(resp.Data.PageToken)
 	}
+}
+
+func (c *Client) downloadAssetReader(
+	ctx context.Context,
+	asset AssetRef,
+	options []larkcore.RequestOptionFunc,
+) (io.Reader, string, error) {
+	switch asset.Kind {
+	case AssetKindWhiteboard:
+		resp, err := c.larkClient.Board.V1.Whiteboard.DownloadAsImage(
+			ctx,
+			larkboard.NewDownloadAsImageWhiteboardReqBuilder().WhiteboardId(asset.Token).Build(),
+			options...,
+		)
+		if err != nil {
+			return nil, "", err
+		}
+		return resp.File, resp.FileName, nil
+	default:
+		resp, err := c.larkClient.Drive.V1.Media.Download(
+			ctx,
+			larkdrive.NewDownloadMediaReqBuilder().FileToken(asset.Token).Build(),
+			options...,
+		)
+		if err != nil {
+			return nil, "", err
+		}
+		return resp.File, resp.FileName, nil
+	}
+}
+
+func buildAssetPath(outDir string, asset AssetRef, originalName string) string {
+	ext := filepath.Ext(originalName)
+	if ext == "" && asset.Kind == AssetKindWhiteboard {
+		ext = ".png"
+	}
+	if ext == "" {
+		ext = ".bin"
+	}
+	return fmt.Sprintf("%s/%s%s", outDir, asset.Token, ext)
 }
