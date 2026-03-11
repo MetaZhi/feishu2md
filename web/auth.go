@@ -95,24 +95,19 @@ func loadWebConfigFromFile() error {
 	if webFeishuConfig.OAuthRedirectURL == "" {
 		webFeishuConfig.OAuthRedirectURL = config.Feishu.OAuthRedirectURL
 	}
-	if !webFeishuConfig.HasUserSession() {
-		webFeishuConfig.SetUserAuthState(mustUserAuthState(config.Feishu))
-	}
 	return nil
-}
-
-func mustUserAuthState(config core.FeishuConfig) core.UserAuthState {
-	state, err := config.UserAuthState()
-	if err != nil {
-		return core.UserAuthState{}
-	}
-	return state
 }
 
 func persistWebConfig() error {
 	conf := core.NewConfig("", "")
-	conf.Feishu = webFeishuConfig
+	conf.Feishu = webPersistedConfig()
 	return conf.WriteConfig2File(webConfigPath)
+}
+
+func webPersistedConfig() core.FeishuConfig {
+	config := webFeishuConfig
+	config.SetUserAuthState(core.UserAuthState{})
+	return config
 }
 
 func webHasCredentials() bool {
@@ -155,10 +150,6 @@ func loginPageData(c *gin.Context) gin.H {
 	}
 	sessionID, ok := readSessionID(c)
 	if !ok {
-		if userAuth, err := webFeishuConfig.UserAuthState(); err == nil && userAuth.AccessToken != "" {
-			data["Authenticated"] = true
-			data["UserName"] = userAuth.Name
-		}
 		return data
 	}
 	session, ok := webSessions.get(sessionID)
@@ -217,14 +208,6 @@ func authCallbackHandler(c *gin.Context) {
 		current.ExpectedState = ""
 		current.UserAuth = state
 	})
-	webConfigMu.Lock()
-	webFeishuConfig.SetUserAuthState(state)
-	err = persistWebConfig()
-	webConfigMu.Unlock()
-	if err != nil {
-		c.String(http.StatusInternalServerError, err.Error())
-		return
-	}
 	c.Redirect(http.StatusFound, session.NextURL)
 }
 
@@ -233,10 +216,6 @@ func authLogoutHandler(c *gin.Context) {
 	if ok {
 		webSessions.delete(sessionID)
 	}
-	webConfigMu.Lock()
-	webFeishuConfig.SetUserAuthState(core.UserAuthState{})
-	_ = persistWebConfig()
-	webConfigMu.Unlock()
 	c.SetCookie(sessionCookieName, "", -1, "/", "", false, true)
 	c.Redirect(http.StatusFound, "/")
 }
@@ -254,11 +233,7 @@ func newWebClient(c *gin.Context) (*core.Client, error) {
 	}
 	session, ok := webSessions.get(sessionID)
 	if !ok || session.UserAuth.RefreshToken == "" {
-		userAuth, err := webFeishuConfig.UserAuthState()
-		if err != nil || userAuth.RefreshToken == "" {
-			return nil, core.ErrUserLoginRequired
-		}
-		session = &sessionData{UserAuth: userAuth}
+		return nil, core.ErrUserLoginRequired
 	}
 	config := webFeishuConfig
 	config.SetUserAuthState(session.UserAuth)
@@ -270,10 +245,6 @@ func newWebClient(c *gin.Context) (*core.Client, error) {
 			webSessions.update(sessionID, func(current *sessionData) {
 				current.UserAuth = state
 			})
-			webFeishuConfig.SetUserAuthState(state)
-			if err := persistWebConfig(); err != nil {
-				return err
-			}
 			return nil
 		},
 	)
