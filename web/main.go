@@ -23,6 +23,7 @@ func main() {
 	}
 
 	router := gin.New()
+	router.Use(gin.Logger(), gin.Recovery())
 	templ := template.Must(template.New("").ParseFS(f, "templ/*.templ.html"))
 	router.SetHTMLTemplate(templ)
 

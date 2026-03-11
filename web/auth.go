@@ -18,17 +18,21 @@ import (
 const (
 	defaultWebRedirectURL = "http://127.0.0.1:8080/auth/callback"
 	sessionCookieName     = "feishu2md_session"
+	defaultSessionTTL     = 24 * time.Hour
+	sessionCleanupWindow  = 10 * time.Minute
 )
 
 type sessionData struct {
 	ExpectedState string
 	NextURL       string
 	UserAuth      core.UserAuthState
+	ExpiresAt     time.Time
 }
 
 type sessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*sessionData
+	mu          sync.RWMutex
+	sessions    map[string]*sessionData
+	lastCleanup time.Time
 }
 
 var (
@@ -44,12 +48,13 @@ func initWebAuth() error {
 	webFeishuConfig = core.FeishuConfig{
 		AppId:            os.Getenv("FEISHU_APP_ID"),
 		AppSecret:        os.Getenv("FEISHU_APP_SECRET"),
-		AuthType:         readWebAuthType(),
-		OAuthRedirectURL: readWebRedirectURL(),
+		AuthType:         os.Getenv("FEISHU_AUTH_TYPE"),
+		OAuthRedirectURL: os.Getenv("FEISHU_OAUTH_REDIRECT_URI"),
 	}
 	if err := loadWebConfigFromFile(); err != nil {
 		return err
 	}
+	applyWebConfigDefaults()
 	if !webHasCredentials() {
 		return nil
 	}
@@ -114,20 +119,13 @@ func webHasCredentials() bool {
 	return webFeishuConfig.AppId != "" && webFeishuConfig.AppSecret != ""
 }
 
-func readWebAuthType() string {
-	value := os.Getenv("FEISHU_AUTH_TYPE")
-	if value == "" {
-		return core.AuthTypeApp
+func applyWebConfigDefaults() {
+	if webFeishuConfig.AuthType == "" {
+		webFeishuConfig.AuthType = core.AuthTypeApp
 	}
-	return value
-}
-
-func readWebRedirectURL() string {
-	value := os.Getenv("FEISHU_OAUTH_REDIRECT_URI")
-	if value == "" {
-		return defaultWebRedirectURL
+	if webFeishuConfig.OAuthRedirectURL == "" {
+		webFeishuConfig.OAuthRedirectURL = defaultWebRedirectURL
 	}
-	return value
 }
 
 func webCallbackPath() string {
@@ -321,6 +319,7 @@ func authBootstrapHandler(c *gin.Context) {
 		return
 	}
 	webFeishuConfig = config
+	applyWebConfigDefaults()
 	webOAuth = core.NewOAuthService(webFeishuConfig)
 	if err := persistWebConfig(); err != nil {
 		c.String(http.StatusInternalServerError, err.Error())
@@ -334,7 +333,7 @@ func ensureSessionID(c *gin.Context) string {
 		return value
 	}
 	sessionID, _ := core.GenerateOAuthState()
-	c.SetCookie(sessionCookieName, sessionID, int((24 * time.Hour).Seconds()), "/", "", false, true)
+	c.SetCookie(sessionCookieName, sessionID, int(defaultSessionTTL.Seconds()), "/", "", false, true)
 	webSessions.update(sessionID, func(session *sessionData) {})
 	return sessionID
 }
@@ -349,23 +348,31 @@ func readSessionID(c *gin.Context) (string, bool) {
 
 func (s *sessionStore) get(sessionID string) (*sessionData, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	session, ok := s.sessions[sessionID]
 	if !ok {
+		s.mu.RUnlock()
 		return nil, false
 	}
 	copy := *session
+	s.mu.RUnlock()
+	if sessionExpired(copy.ExpiresAt, time.Now()) {
+		s.delete(sessionID)
+		return nil, false
+	}
 	return &copy, true
 }
 
 func (s *sessionStore) update(sessionID string, update func(*sessionData)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	s.cleanupExpiredLocked(now)
 	session, ok := s.sessions[sessionID]
 	if !ok {
 		session = &sessionData{}
 		s.sessions[sessionID] = session
 	}
+	session.ExpiresAt = now.Add(defaultSessionTTL)
 	update(session)
 }
 
@@ -373,4 +380,20 @@ func (s *sessionStore) delete(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+}
+
+func (s *sessionStore) cleanupExpiredLocked(now time.Time) {
+	if !s.lastCleanup.IsZero() && now.Sub(s.lastCleanup) < sessionCleanupWindow {
+		return
+	}
+	for sessionID, session := range s.sessions {
+		if sessionExpired(session.ExpiresAt, now) {
+			delete(s.sessions, sessionID)
+		}
+	}
+	s.lastCleanup = now
+}
+
+func sessionExpired(expiresAt, now time.Time) bool {
+	return !expiresAt.IsZero() && !now.Before(expiresAt)
 }

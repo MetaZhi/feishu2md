@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Wsine/feishu2md/core"
 	"github.com/gin-gonic/gin"
@@ -182,5 +183,86 @@ func TestPersistedWebConfigJSONOmitsUserAuthFields(t *testing.T) {
 	}
 	if _, ok = feishu["user_refresh_token"]; ok {
 		t.Fatalf("persisted json should not contain user_refresh_token: %s", string(raw))
+	}
+}
+
+func TestInitWebAuthLoadsPersistedAppSettings(t *testing.T) {
+	restore := snapshotWebAuthState()
+	defer restore()
+
+	configPath := filepath.Join(t.TempDir(), "web_config.json")
+	config := core.NewConfig("cli_xxx", "secret")
+	config.Feishu.AuthType = core.AuthTypeUser
+	config.Feishu.OAuthRedirectURL = "https://example.com/auth/callback"
+	config.Feishu.SetUserAuthState(testUserAuthState())
+	if err := config.WriteConfig2File(configPath); err != nil {
+		t.Fatalf("WriteConfig2File() error = %v", err)
+	}
+
+	t.Setenv("FEISHU_APP_ID", "")
+	t.Setenv("FEISHU_APP_SECRET", "")
+	t.Setenv("FEISHU_AUTH_TYPE", "")
+	t.Setenv("FEISHU_OAUTH_REDIRECT_URI", "")
+	t.Setenv("FEISHU_WEB_CONFIG_PATH", configPath)
+
+	if err := initWebAuth(); err != nil {
+		t.Fatalf("initWebAuth() error = %v", err)
+	}
+
+	if webFeishuConfig.AppId != "cli_xxx" || webFeishuConfig.AppSecret != "secret" {
+		t.Fatalf("initWebAuth() did not load persisted credentials: %+v", webFeishuConfig)
+	}
+	if webFeishuConfig.AuthType != core.AuthTypeUser {
+		t.Fatalf("initWebAuth() auth type = %q, want %q", webFeishuConfig.AuthType, core.AuthTypeUser)
+	}
+	if webFeishuConfig.OAuthRedirectURL != "https://example.com/auth/callback" {
+		t.Fatalf("initWebAuth() redirect uri = %q", webFeishuConfig.OAuthRedirectURL)
+	}
+	if webFeishuConfig.HasUserSession() {
+		t.Fatal("initWebAuth() should not restore persisted user session")
+	}
+}
+
+func TestSessionStoreRemovesExpiredSessions(t *testing.T) {
+	store := &sessionStore{
+		sessions: map[string]*sessionData{
+			"expired": {ExpiresAt: time.Now().Add(-time.Minute)},
+			"active":  {ExpiresAt: time.Now().Add(time.Hour)},
+		},
+	}
+
+	if _, ok := store.get("expired"); ok {
+		t.Fatal("get() should reject expired session")
+	}
+	if _, ok := store.sessions["expired"]; ok {
+		t.Fatal("expired session should be deleted from store")
+	}
+
+	store.lastCleanup = time.Time{}
+	store.update("active", func(session *sessionData) {})
+	if _, ok := store.sessions["active"]; !ok {
+		t.Fatal("active session should remain after cleanup")
+	}
+}
+
+func TestDownloadHandlerRejectsInvalidURL(t *testing.T) {
+	restore := snapshotWebAuthState()
+	defer restore()
+
+	gin.SetMode(gin.TestMode)
+	webFeishuConfig = core.FeishuConfig{
+		AppId:     "cli_xxx",
+		AppSecret: "secret",
+		AuthType:  core.AuthTypeApp,
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/download?url=not-a-feishu-url", nil)
+
+	downloadHandler(context)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("downloadHandler() status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
