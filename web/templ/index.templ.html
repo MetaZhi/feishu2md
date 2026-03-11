@@ -58,6 +58,9 @@
         margin: 12px auto 0;
         max-width: 360px;
       }
+      .hidden {
+        display: none;
+      }
     </style>
   </head>
 
@@ -66,6 +69,15 @@
       <wired-card elevation="5">
         <h1>feishu2md service</h1>
         <p>当前鉴权模式：{{ .AuthType }}</p>
+        {{ if .NeedsConfig }}
+        <div class="status">
+          <div>请先配置飞书应用凭证（仅首次可设置）</div>
+          <wired-input id="setup-app-id" placeholder="App ID"></wired-input>
+          <wired-input id="setup-app-secret" placeholder="App Secret"></wired-input>
+          <wired-button id="setup-button" elevation="2">保存配置</wired-button>
+          <div id="setup-hint"></div>
+        </div>
+        {{ else }}
         {{ if eq .AuthType "user" }}
         <div class="status">
           {{ if .Authenticated }}
@@ -76,6 +88,7 @@
           <wired-button id="login-button" elevation="2">Login With Feishu</wired-button>
           {{ end }}
         </div>
+        {{ end }}
         {{ end }}
       </wired-card>
 
@@ -109,6 +122,8 @@
     const hint = document.querySelector("#hint");
     const loginButton = document.querySelector("#login-button");
     const logoutButton = document.querySelector("#logout-button");
+    const setupButton = document.querySelector("#setup-button");
+    const setupHint = document.querySelector("#setup-hint");
 
     button.addEventListener("click", () => {
       const docUrl = encodeURIComponent(url.value.trim());
@@ -125,6 +140,28 @@
     if (logoutButton) {
       logoutButton.addEventListener("click", () => {
         window.location.href = "/auth/logout";
+      });
+    }
+
+    if (setupButton) {
+      setupButton.addEventListener("click", async () => {
+        const appID = document.querySelector("#setup-app-id").value.trim();
+        const appSecret = document.querySelector("#setup-app-secret").value.trim();
+        if (!appID || !appSecret) {
+          setupHint.textContent = "请输入 App ID 和 App Secret";
+          return;
+        }
+        setupHint.textContent = "保存中...";
+        const response = await fetch("/auth/bootstrap", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ app_id: appID, app_secret: appSecret }),
+        });
+        if (response.ok) {
+          window.location.reload();
+          return;
+        }
+        setupHint.textContent = await response.text();
       });
     }
   </script>

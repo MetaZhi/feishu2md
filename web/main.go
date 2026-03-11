@@ -30,6 +30,7 @@ func main() {
 		c.HTML(http.StatusOK, "index.templ.html", loginPageData(c))
 	})
 	router.GET("/auth/login", authLoginHandler)
+	router.POST("/auth/bootstrap", authBootstrapHandler)
 	router.GET(webCallbackPath(), authCallbackHandler)
 	router.GET("/auth/logout", authLogoutHandler)
 	router.GET("/download", downloadHandler)
