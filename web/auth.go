@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -32,20 +35,88 @@ var (
 	webFeishuConfig core.FeishuConfig
 	webOAuth        *core.OAuthService
 	webSessions     = &sessionStore{sessions: map[string]*sessionData{}}
+	webConfigPath   string
+	webConfigMu     sync.RWMutex
 )
 
 func initWebAuth() error {
+	webConfigPath = readWebConfigPath()
 	webFeishuConfig = core.FeishuConfig{
 		AppId:            os.Getenv("FEISHU_APP_ID"),
 		AppSecret:        os.Getenv("FEISHU_APP_SECRET"),
 		AuthType:         readWebAuthType(),
 		OAuthRedirectURL: readWebRedirectURL(),
 	}
+	if err := loadWebConfigFromFile(); err != nil {
+		return err
+	}
+	if !webHasCredentials() {
+		return nil
+	}
 	if err := webFeishuConfig.Validate(); err != nil {
 		return err
 	}
 	webOAuth = core.NewOAuthService(webFeishuConfig)
 	return nil
+}
+
+func readWebConfigPath() string {
+	if value := os.Getenv("FEISHU_WEB_CONFIG_PATH"); value != "" {
+		return value
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "web_config.json"
+	}
+	return filepath.Join(configDir, "feishu2md", "web_config.json")
+}
+
+func loadWebConfigFromFile() error {
+	raw, err := os.ReadFile(webConfigPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var config core.Config
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return err
+	}
+	if webFeishuConfig.AppId == "" {
+		webFeishuConfig.AppId = config.Feishu.AppId
+	}
+	if webFeishuConfig.AppSecret == "" {
+		webFeishuConfig.AppSecret = config.Feishu.AppSecret
+	}
+	if webFeishuConfig.AuthType == "" {
+		webFeishuConfig.AuthType = config.Feishu.AuthType
+	}
+	if webFeishuConfig.OAuthRedirectURL == "" {
+		webFeishuConfig.OAuthRedirectURL = config.Feishu.OAuthRedirectURL
+	}
+	if !webFeishuConfig.HasUserSession() {
+		webFeishuConfig.SetUserAuthState(mustUserAuthState(config.Feishu))
+	}
+	return nil
+}
+
+func mustUserAuthState(config core.FeishuConfig) core.UserAuthState {
+	state, err := config.UserAuthState()
+	if err != nil {
+		return core.UserAuthState{}
+	}
+	return state
+}
+
+func persistWebConfig() error {
+	conf := core.NewConfig("", "")
+	conf.Feishu = webFeishuConfig
+	return conf.WriteConfig2File(webConfigPath)
+}
+
+func webHasCredentials() bool {
+	return webFeishuConfig.AppId != "" && webFeishuConfig.AppSecret != ""
 }
 
 func readWebAuthType() string {
@@ -77,9 +148,17 @@ func loginPageData(c *gin.Context) gin.H {
 		"AuthType":      webFeishuConfig.AuthType,
 		"Authenticated": false,
 		"UserName":      "",
+		"NeedsConfig":   !webHasCredentials(),
+	}
+	if data["NeedsConfig"].(bool) {
+		return data
 	}
 	sessionID, ok := readSessionID(c)
 	if !ok {
+		if userAuth, err := webFeishuConfig.UserAuthState(); err == nil && userAuth.AccessToken != "" {
+			data["Authenticated"] = true
+			data["UserName"] = userAuth.Name
+		}
 		return data
 	}
 	session, ok := webSessions.get(sessionID)
@@ -92,6 +171,10 @@ func loginPageData(c *gin.Context) gin.H {
 }
 
 func authLoginHandler(c *gin.Context) {
+	if !webHasCredentials() {
+		c.String(http.StatusBadRequest, "missing app_id/app_secret, please configure first")
+		return
+	}
 	if webFeishuConfig.AuthType != core.AuthTypeUser {
 		c.Redirect(http.StatusFound, "/")
 		return
@@ -134,6 +217,14 @@ func authCallbackHandler(c *gin.Context) {
 		current.ExpectedState = ""
 		current.UserAuth = state
 	})
+	webConfigMu.Lock()
+	webFeishuConfig.SetUserAuthState(state)
+	err = persistWebConfig()
+	webConfigMu.Unlock()
+	if err != nil {
+		c.String(http.StatusInternalServerError, err.Error())
+		return
+	}
 	c.Redirect(http.StatusFound, session.NextURL)
 }
 
@@ -142,11 +233,18 @@ func authLogoutHandler(c *gin.Context) {
 	if ok {
 		webSessions.delete(sessionID)
 	}
+	webConfigMu.Lock()
+	webFeishuConfig.SetUserAuthState(core.UserAuthState{})
+	_ = persistWebConfig()
+	webConfigMu.Unlock()
 	c.SetCookie(sessionCookieName, "", -1, "/", "", false, true)
 	c.Redirect(http.StatusFound, "/")
 }
 
 func newWebClient(c *gin.Context) (*core.Client, error) {
+	if !webHasCredentials() {
+		return nil, fmt.Errorf("missing app_id/app_secret, please configure first")
+	}
 	if webFeishuConfig.AuthType != core.AuthTypeUser {
 		return core.NewClient(webFeishuConfig, nil), nil
 	}
@@ -156,16 +254,26 @@ func newWebClient(c *gin.Context) (*core.Client, error) {
 	}
 	session, ok := webSessions.get(sessionID)
 	if !ok || session.UserAuth.RefreshToken == "" {
-		return nil, core.ErrUserLoginRequired
+		userAuth, err := webFeishuConfig.UserAuthState()
+		if err != nil || userAuth.RefreshToken == "" {
+			return nil, core.ErrUserLoginRequired
+		}
+		session = &sessionData{UserAuth: userAuth}
 	}
 	config := webFeishuConfig
 	config.SetUserAuthState(session.UserAuth)
 	provider, err := core.NewRefreshingUserTokenProvider(
 		config,
 		func(state core.UserAuthState) error {
+			webConfigMu.Lock()
+			defer webConfigMu.Unlock()
 			webSessions.update(sessionID, func(current *sessionData) {
 				current.UserAuth = state
 			})
+			webFeishuConfig.SetUserAuthState(state)
+			if err := persistWebConfig(); err != nil {
+				return err
+			}
 			return nil
 		},
 	)
@@ -189,6 +297,10 @@ func validateWebCallback(c *gin.Context, expectedState string) error {
 }
 
 func requireWebLogin(c *gin.Context) bool {
+	if !webHasCredentials() {
+		c.String(http.StatusBadRequest, "missing app_id/app_secret, please configure first")
+		return true
+	}
 	if webFeishuConfig.AuthType != core.AuthTypeUser {
 		return false
 	}
@@ -203,6 +315,47 @@ func requireWebLogin(c *gin.Context) bool {
 	next := url.QueryEscape(c.Request.URL.RequestURI())
 	c.Redirect(http.StatusFound, "/auth/login?next="+next)
 	return true
+}
+
+type setupRequest struct {
+	AppID       string `json:"app_id"`
+	AppSecret   string `json:"app_secret"`
+	AuthType    string `json:"auth_type"`
+	RedirectURI string `json:"redirect_uri"`
+}
+
+func authBootstrapHandler(c *gin.Context) {
+	webConfigMu.Lock()
+	defer webConfigMu.Unlock()
+	if webHasCredentials() {
+		c.String(http.StatusForbidden, "app credentials already configured")
+		return
+	}
+	var req setupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.String(http.StatusBadRequest, err.Error())
+		return
+	}
+	config := webFeishuConfig
+	config.AppId = req.AppID
+	config.AppSecret = req.AppSecret
+	if req.AuthType != "" {
+		config.AuthType = req.AuthType
+	}
+	if req.RedirectURI != "" {
+		config.OAuthRedirectURL = req.RedirectURI
+	}
+	if err := config.Validate(); err != nil {
+		c.String(http.StatusBadRequest, err.Error())
+		return
+	}
+	webFeishuConfig = config
+	webOAuth = core.NewOAuthService(webFeishuConfig)
+	if err := persistWebConfig(); err != nil {
+		c.String(http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func ensureSessionID(c *gin.Context) string {
