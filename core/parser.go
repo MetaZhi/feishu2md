@@ -531,16 +531,24 @@ func (p *Parser) parseChildSequence(childIDs []string, indentLevel int) string {
 		if p.isListBlock(block) {
 			rendered, next := p.parseListSequence(childIDs, index, indentLevel)
 			buf.WriteString(rendered)
+			p.appendBlockSeparator(buf)
 			index = next
 			continue
 		}
 		buf.WriteString(p.parseBlock(block, indentLevel))
-		if !strings.HasSuffix(buf.String(), "\n") {
-			buf.WriteString("\n")
-		}
+		p.appendBlockSeparator(buf)
 		index++
 	}
 	return buf.String()
+}
+
+func (p *Parser) appendBlockSeparator(buf *strings.Builder) {
+	if !strings.HasSuffix(buf.String(), "\n") {
+		buf.WriteString("\n")
+	}
+	if !strings.HasSuffix(buf.String(), "\n\n") {
+		buf.WriteString("\n")
+	}
 }
 
 func (p *Parser) parseListSequence(childIDs []string, index, indentLevel int) (string, int) {
